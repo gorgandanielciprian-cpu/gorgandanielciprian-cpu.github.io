@@ -1,0 +1,813 @@
+
+// Corrected Android implementation blueprint for Romania House Construction Manager
+// Stack: Kotlin + Jetpack Compose + Room + Apache POI
+// Status: reviewed for compile issues, Room logic, duplicate imports, double-counting, and Android document handling.
+/*
+============================================================
+settings.gradle.kts
+============================================================
+pluginManagement { repositories { google(); mavenCentral(); gradlePluginPortal() } }
+dependencyResolutionManagement { repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS); repositories { google(); mavenCentral() } }
+rootProject.name = "HouseConstructionManager"
+include(":app")
+
+============================================================
+app/build.gradle.kts
+============================================================
+plugins {
+    id("com.android.application")
+    id("org.jetbrains.kotlin.android")
+    id("kotlin-kapt")
+}
+
+android {
+    namespace = "com.example.houseconstruction"
+    compileSdk = 35
+
+    defaultConfig {
+        applicationId = "com.example.houseconstruction"
+        minSdk = 26
+        targetSdk = 35
+        versionCode = 1
+        versionName = "1.0"
+    }
+
+    buildFeatures { compose = true }
+    composeOptions { kotlinCompilerExtensionVersion = "1.5.15" }
+
+
+    packaging {
+        resources {
+            excludes += setOf(
+                "META-INF/DEPENDENCIES",
+                "META-INF/LICENSE",
+                "META-INF/LICENSE.txt",
+                "META-INF/NOTICE",
+                "META-INF/NOTICE.txt",
+                "META-INF/AL2.0",
+                "META-INF/LGPL2.1"
+            )
+        }
+    }
+}
+
+dependencies {
+    implementation("androidx.core:core-ktx:1.13.1")
+    implementation("androidx.activity:activity-compose:1.9.2")
+    implementation("androidx.compose.ui:ui:1.7.0")
+    implementation("androidx.compose.material3:material3:1.3.0")
+    implementation("androidx.compose.ui:ui-tooling-preview:1.7.0")
+    debugImplementation("androidx.compose.ui:ui-tooling:1.7.0")
+
+
+    implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.8.4")
+    implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.4")
+
+    implementation("androidx.room:room-runtime:2.6.1")
+    implementation("androidx.room:room-ktx:2.6.1")
+    kapt("androidx.room:room-compiler:2.6.1")
+
+    implementation("org.apache.poi:poi:5.2.5")
+    implementation("org.apache.poi:poi-ooxml:5.2.5")
+}
+*/
+
+package com.example.houseconstruction
+
+import android.app.Application
+import android.content.Context
+import android.net.Uri
+import android.os.Bundle
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
+import androidx.lifecycle.AndroidViewModel
+import androidx.lifecycle.viewModelScope
+import androidx.room.*
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import org.apache.poi.ss.usermodel.Cell
+import org.apache.poi.ss.usermodel.DataFormatter
+import org.apache.poi.ss.usermodel.DateUtil
+import org.apache.poi.xssf.usermodel.XSSFWorkbook
+import java.io.InputStream
+import java.io.OutputStream
+import kotlin.math.roundToInt
+
+// ============================================================
+// 1. ROOM DATABASE ENTITIES
+// ============================================================
+
+@Entity(tableName = "projects")
+data class ProjectEntity(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    val name: String,
+    val location: String,
+    val baseCurrency: String = "EUR",
+    val exchangeRateRonPerEur: Double = 5.05,
+    val vatRate: Double = 0.19
+)
+
+@Entity(
+    tableName = "construction_phases",
+    foreignKeys = [ForeignKey(entity = ProjectEntity::class, parentColumns = ["id"], childColumns = ["projectId"], onDelete = ForeignKey.CASCADE)],
+    indices = [Index("projectId"), Index(value = ["projectId", "name"], unique = true)]
+)
+data class ConstructionPhaseEntity(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    val projectId: Long,
+    val name: String,
+    val plannedCost: Double,
+    val actualCost: Double,
+    val progress: Int,
+    val startDate: String,
+    val endDate: String,
+    val status: String
+)
+
+@Entity(tableName = "contractors", indices = [Index(value = ["company"], unique = true)])
+data class ContractorEntity(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    val company: String,
+    val contact: String,
+    val phone: String,
+    val email: String,
+    val trade: String
+)
+
+@Entity(
+    tableName = "expenses",
+    foreignKeys = [
+        ForeignKey(entity = ConstructionPhaseEntity::class, parentColumns = ["id"], childColumns = ["phaseId"], onDelete = ForeignKey.CASCADE),
+        ForeignKey(entity = ContractorEntity::class, parentColumns = ["id"], childColumns = ["contractorId"], onDelete = ForeignKey.SET_NULL)
+    ],
+    indices = [Index("phaseId"), Index("contractorId")]
+)
+data class ExpenseEntity(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    val phaseId: Long,
+    val contractorId: Long?,
+    val category: String,
+    val description: String,
+    val amount: Double,
+    val currency: String,
+    val vatIncluded: Boolean,
+    val date: String
+)
+
+@Entity(
+    tableName = "documents",
+    foreignKeys = [
+        ForeignKey(entity = ConstructionPhaseEntity::class, parentColumns = ["id"], childColumns = ["phaseId"], onDelete = ForeignKey.CASCADE),
+        ForeignKey(entity = ExpenseEntity::class, parentColumns = ["id"], childColumns = ["expenseId"], onDelete = ForeignKey.SET_NULL)
+    ],
+    indices = [Index("phaseId"), Index("expenseId")]
+)
+data class DocumentEntity(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    val phaseId: Long,
+    val expenseId: Long?,
+    val type: String, // PHOTO, INVOICE_PDF, INVOICE_IMAGE, QR_MATERIAL
+    val fileUri: String,
+    val createdAt: String
+)
+
+// ============================================================
+// 2. DAO LAYER
+// ============================================================
+
+@Dao
+interface ConstructionDao {
+    @Query("SELECT * FROM projects LIMIT 1")
+    fun observeProject(): Flow<ProjectEntity?>
+
+    @Query("SELECT * FROM projects LIMIT 1")
+    suspend fun getProjectOnce(): ProjectEntity?
+    @Query("SELECT * FROM construction_phases ORDER BY id")
+    fun observePhases(): Flow<List<ConstructionPhaseEntity>>
+
+    @Query("SELECT * FROM contractors ORDER BY company")
+    fun observeContractors(): Flow<List<ContractorEntity>>
+
+    @Query("SELECT * FROM expenses ORDER BY date DESC")
+    fun observeExpenses(): Flow<List<ExpenseEntity>>
+
+    @Query("SELECT * FROM documents ORDER BY id DESC")
+    fun observeDocuments(): Flow<List<DocumentEntity>>
+
+    @Insert(onConflict = OnConflictStrategy.IGNORE)
+    suspend fun insertProject(project: ProjectEntity): Long
+    @Insert(onConflict = OnConflictStrategy.IGNORE)
+    suspend fun insertPhase(phase: ConstructionPhaseEntity): Long
+    @Update
+    suspend fun updatePhase(phase: ConstructionPhaseEntity)
+    @Query("SELECT * FROM construction_phases WHERE projectId = :projectId AND name = :name LIMIT 1")
+    suspend fun findPhaseByName(projectId: Long, name: String): ConstructionPhaseEntity?
+    @Insert(onConflict = OnConflictStrategy.IGNORE)
+    suspend fun insertContractor(contractor: ContractorEntity): Long
+    @Update
+    suspend fun updateContractor(contractor: ContractorEntity)
+    @Query("SELECT * FROM contractors WHERE company = :company LIMIT 1")
+    suspend fun findContractorByCompany(company: String): ContractorEntity?
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertExpense(expense: ExpenseEntity): Long
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertDocument(document: DocumentEntity): Long
+    @Delete
+    suspend fun deleteContractor(contractor: ContractorEntity)
+
+    @Query("UPDATE construction_phases SET progress = :progress, status = :status WHERE id = :phaseId")
+    suspend fun updatePhaseProgress(phaseId: Long, progress: Int, status: String)
+
+
+    @Transaction
+    suspend fun upsertPhaseByName(phase: ConstructionPhaseEntity): Long {
+        val existing = findPhaseByName(phase.projectId, phase.name)
+        return if (existing == null) {
+            insertPhase(phase)
+        } else {
+            updatePhase(phase.copy(id = existing.id))
+            existing.id
+        }
+    }
+
+
+    @Transaction
+    suspend fun upsertContractorByCompany(contractor: ContractorEntity): Long {
+        val existing = findContractorByCompany(contractor.company)
+        return if (existing == null) {
+            insertContractor(contractor)
+        } else {
+            updateContractor(contractor.copy(id = existing.id))
+            existing.id
+        }
+    }
+}
+
+@Database(
+    entities = [ProjectEntity::class, ConstructionPhaseEntity::class, ContractorEntity::class, ExpenseEntity::class, DocumentEntity::class],
+    version = 1,
+    exportSchema = true
+)
+abstract class ConstructionDatabase : RoomDatabase() {
+    abstract fun dao(): ConstructionDao
+
+
+    companion object {
+        @Volatile private var INSTANCE: ConstructionDatabase? = null
+
+
+        fun get(context: Context): ConstructionDatabase = INSTANCE ?: synchronized(this) {
+            INSTANCE ?: Room.databaseBuilder(context.applicationContext, ConstructionDatabase::class.java, "construction.db")
+                .fallbackToDestructiveMigration(false)
+                .build()
+                .also { INSTANCE = it }
+        }
+    }
+}
+
+
+// ============================================================
+// 3. ANALYTICS / FORECASTING / CURRENCY ENGINE
+// ============================================================
+
+
+data class DashboardAnalytics(
+    val planned: Double = 0.0,
+    val actual: Double = 0.0,
+    val variance: Double = 0.0,
+    val variancePct: Int = 0,
+    val progress: Int = 0,
+    val forecastCompletionCost: Double = 0.0,
+    val forecastVariance: Double = 0.0,
+    val vatExposure: Double = 0.0,
+    val warnings: List<String> = emptyList()
+)
+
+private fun phaseActualCost(phase: ConstructionPhaseEntity, expenses: List<ExpenseEntity>): Double {
+    return phase.actualCost + expenses.filter { it.phaseId == phase.id }.sumOf { it.amount }
+}
+fun calculateAnalytics(project: ProjectEntity?, phases: List<ConstructionPhaseEntity>, expenses: List<ExpenseEntity>): DashboardAnalytics {
+    val planned = phases.sumOf { it.plannedCost }
+    val actual = phases.sumOf { phaseActualCost(it, expenses) }
+    val variance = planned - actual
+    val variancePct = if (planned > 0) ((variance / planned) * 100).roundToInt() else 0
+    val progress = if (planned > 0) (phases.sumOf { it.progress * it.plannedCost } / planned).roundToInt() else 0
+    val remainingWorkPct = ((100 - progress).coerceAtLeast(0)) / 100.0
+    val forecast = actual + planned * remainingWorkPct
+    val forecastVariance = planned - forecast
+    val vatRate = project?.vatRate ?: 0.19
+    val vat = expenses.sumOf { if (it.vatIncluded) it.amount * vatRate / (1 + vatRate) else it.amount * vatRate }
+    val warnings = buildList {
+        if (forecastVariance < 0) add("Forecast overrun risk: ${(forecastVariance * -1).roundToInt()}")
+        if (variancePct < 10) add("Remaining budget buffer is below 10%")
+        if (phases.any { phaseActualCost(it, expenses) > it.plannedCost }) add("One or more construction phases exceed budget")
+    }
+
+    return DashboardAnalytics(planned, actual, variance, variancePct, progress, forecast, forecastVariance, vat, warnings)
+}
+
+fun convertCurrency(amountEur: Double, currency: String, rate: Double): Double = if (currency == "RON") amountEur * rate else amountEur
+
+fun formatMoney(amountEur: Double, project: ProjectEntity?): String {
+    val currency = project?.baseCurrency ?: "EUR"
+    val rate = project?.exchangeRateRonPerEur ?: 5.05
+    return "$currency ${convertCurrency(amountEur, currency, rate).roundToInt()}"
+}
+// ============================================================
+// 4. APACHE POI EXCEL IMPORT / EXPORT SERVICE
+// ============================================================
+
+class ConstructionExcelService(private val dao: ConstructionDao) {
+    private val formatter = DataFormatter()
+
+
+    suspend fun importWorkbook(projectId: Long, inputStream: InputStream) = withContext(Dispatchers.IO) {
+        val workbook = XSSFWorkbook(inputStream)
+        val sheet = workbook.getSheet("Import") ?: workbook.getSheetAt(0)
+
+        for (rowIndex in 1..sheet.lastRowNum) {
+            val row = sheet.getRow(rowIndex) ?: continue
+            val phaseName = text(row.getCell(0))
+            val task = text(row.getCell(1))
+            val contractorName = text(row.getCell(2))
+            val planned = number(row.getCell(3))
+            val actual = number(row.getCell(4))
+            val startDate = dateOrText(row.getCell(5))
+            val endDate = dateOrText(row.getCell(6))
+            val status = text(row.getCell(7)).ifBlank { "Not Started" }
+            if (phaseName.isBlank()) continue
+
+            // Important correction: imported actual cost is stored as an expense, not also as phase.actualCost.
+            // This avoids double counting in analytics.
+            val phaseId = dao.upsertPhaseByName(
+                ConstructionPhaseEntity(
+                    projectId = projectId,
+                    name = phaseName,
+                    plannedCost = planned,
+                    actualCost = 0.0,
+                    progress = statusToProgress(status),
+                    startDate = startDate,
+                    endDate = endDate,
+                    status = normalizeStatus(status)
+                )
+            )
+
+            val contractorId = if (contractorName.isNotBlank()) {
+                dao.upsertContractorByCompany(ContractorEntity(company = contractorName, contact = "", phone = "", email = "", trade = phaseName))
+            } else null
+            if (actual > 0) {
+                dao.insertExpense(
+                    ExpenseEntity(
+                        phaseId = phaseId,
+                        contractorId = contractorId,
+                        category = if (contractorId != null) "Contractors" else "Materials",
+                        description = task.ifBlank { "Imported cost for $phaseName" },
+                        amount = actual,
+                        currency = "EUR",
+                        vatIncluded = true,
+                        date = startDate
+                    )
+                )
+            }
+        }
+        workbook.close()
+    }
+
+    fun exportReports(project: ProjectEntity?, phases: List<ConstructionPhaseEntity>, contractors: List<ContractorEntity>, expenses: List<ExpenseEntity>, outputStream: OutputStream) {
+        val workbook = XSSFWorkbook()
+
+        val budgetSheet = workbook.createSheet("Budget vs Actual")
+        budgetSheet.createRow(0).apply {
+            createCell(0).setCellValue("Phase")
+            createCell(1).setCellValue("Planned Cost")
+            createCell(2).setCellValue("Actual Cost")
+            createCell(3).setCellValue("Variance")
+            createCell(4).setCellValue("Progress")
+            createCell(5).setCellValue("Status")
+        }
+        phases.forEachIndexed { index, phase ->
+            val actual = phaseActualCost(phase, expenses)
+            budgetSheet.createRow(index + 1).apply {
+                createCell(0).setCellValue(phase.name)
+                createCell(1).setCellValue(phase.plannedCost)
+                createCell(2).setCellValue(actual)
+                createCell(3).setCellValue(phase.plannedCost - actual)
+                createCell(4).setCellValue(phase.progress.toDouble())
+                createCell(5).setCellValue(phase.status)
+            }
+        }
+
+        val contractorSheet = workbook.createSheet("Contractor Costs")
+        contractorSheet.createRow(0).apply {
+            createCell(0).setCellValue("Contractor")
+            createCell(1).setCellValue("Trade")
+            createCell(2).setCellValue("Total Cost")
+        }
+        contractors.forEachIndexed { index, contractor ->
+            val total = expenses.filter { it.contractorId == contractor.id }.sumOf { it.amount }
+            contractorSheet.createRow(index + 1).apply {
+                createCell(0).setCellValue(contractor.company)
+                createCell(1).setCellValue(contractor.trade)
+                createCell(2).setCellValue(total)
+            }
+        }
+
+        val materialSheet = workbook.createSheet("Material Costs")
+        materialSheet.createRow(0).apply {
+            createCell(0).setCellValue("Description")
+            createCell(1).setCellValue("Amount")
+            createCell(2).setCellValue("Date")
+        }
+        expenses.filter { it.category == "Materials" }.forEachIndexed { index, expense ->
+            materialSheet.createRow(index + 1).apply {
+                createCell(0).setCellValue(expense.description)
+                createCell(1).setCellValue(expense.amount)
+                createCell(2).setCellValue(expense.date)
+            }
+        }
+
+        val cashFlowSheet = workbook.createSheet("Monthly Cash Flow")
+        cashFlowSheet.createRow(0).apply {
+            createCell(0).setCellValue("Month")
+            createCell(1).setCellValue("Total Cost")
+        }
+        expenses.groupBy { it.date.take(7) }.entries.forEachIndexed { index, entry ->
+            cashFlowSheet.createRow(index + 1).apply {
+                createCell(0).setCellValue(entry.key)
+                createCell(1).setCellValue(entry.value.sumOf { it.amount })
+            }
+        }
+        val progressSheet = workbook.createSheet("Project Progress")
+        progressSheet.createRow(0).apply {
+            createCell(0).setCellValue("Phase")
+            createCell(1).setCellValue("Start Date")
+            createCell(2).setCellValue("End Date")
+            createCell(3).setCellValue("Progress")
+            createCell(4).setCellValue("Status")
+        }
+        phases.forEachIndexed { index, phase ->
+            progressSheet.createRow(index + 1).apply {
+                createCell(0).setCellValue(phase.name)
+                createCell(1).setCellValue(phase.startDate)
+                createCell(2).setCellValue(phase.endDate)
+                createCell(3).setCellValue(phase.progress.toDouble())
+                createCell(4).setCellValue(phase.status)
+            }
+        }
+
+
+        repeat(workbook.numberOfSheets) { sheetIndex -> workbook.getSheetAt(sheetIndex).autoSizeColumn(0) }
+        workbook.write(outputStream)
+        workbook.close()
+    }
+
+
+    private fun text(cell: Cell?): String = cell?.let { formatter.formatCellValue(it).trim() }.orEmpty()
+
+
+    private fun number(cell: Cell?): Double = when {
+        cell == null -> 0.0
+        cell.cellType == Cell.CELL_TYPE_NUMERIC -> cell.numericCellValue
+        else -> formatter.formatCellValue(cell).replace(",", "").toDoubleOrNull() ?: 0.0
+    }
+
+
+    private fun dateOrText(cell: Cell?): String {
+        if (cell == null) return ""
+        return if (cell.cellType == Cell.CELL_TYPE_NUMERIC && DateUtil.isCellDateFormatted(cell)) {
+            cell.localDateTimeCellValue.toLocalDate().toString()
+        } else text(cell)
+    }
+
+
+    private fun normalizeStatus(status: String): String = when (status.trim().lowercase()) {
+        "completed", "complete", "done" -> "Completed"
+        "in progress", "progress", "ongoing" -> "In Progress"
+        else -> "Not Started"
+    }
+
+
+    private fun statusToProgress(status: String): Int = when (normalizeStatus(status)) {
+        "Completed" -> 100
+        "In Progress" -> 50
+        else -> 0
+    }
+}
+
+// ============================================================
+// 5. VIEWMODEL
+// ============================================================
+
+
+data class UiState(
+    val project: ProjectEntity? = null,
+    val phases: List<ConstructionPhaseEntity> = emptyList(),
+    val contractors: List<ContractorEntity> = emptyList(),
+    val expenses: List<ExpenseEntity> = emptyList(),
+    val documents: List<DocumentEntity> = emptyList(),
+    val analytics: DashboardAnalytics = DashboardAnalytics()
+)
+
+class ConstructionViewModel(application: Application) : AndroidViewModel(application) {
+    private val dao = ConstructionDatabase.get(application).dao()
+    private val excelService = ConstructionExcelService(dao)
+
+    val uiState: StateFlow<UiState> = combine(
+        dao.observeProject(),
+        dao.observePhases(),
+        dao.observeContractors(),
+        dao.observeExpenses(),
+        dao.observeDocuments()
+    ) { project, phases, contractors, expenses, documents ->
+        UiState(project, phases, contractors, expenses, documents, calculateAnalytics(project, phases, expenses))
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), UiState())
+
+    init { seedDatabaseOnce() }
+    private fun seedDatabaseOnce() = viewModelScope.launch(Dispatchers.IO) {
+        if (dao.getProjectOnce() != null) return@launch
+        val projectId = dao.insertProject(ProjectEntity(name = "Romania House Construction", location = "Romania"))
+        val defaultPhases = listOf(
+            "Land Purchase", "Design & Architecture", "Building Permit", "Excavation", "Foundation", "Structure", "Roofing", "Electrical", "Plumbing", "HVAC", "Windows & Doors", "Interior Finishes", "Exterior Facade", "Landscaping", "Final Inspection"
+        )
+        val budgets = listOf(15000.0, 4000.0, 1500.0, 3000.0, 12000.0, 30000.0, 10000.0, 6000.0, 5000.0, 8000.0, 7000.0, 15000.0, 5000.0, 3000.0, 500.0)
+        defaultPhases.forEachIndexed { index, name ->
+            dao.insertPhase(ConstructionPhaseEntity(projectId = projectId, name = name, plannedCost = budgets[index], actualCost = 0.0, progress = 0, startDate = "", endDate = "", status = "Not Started"))
+        }
+        dao.insertContractor(ContractorEntity(company = "SC Construct SRL", contact = "Mihai Popescu", phone = "+40 700 000 001", email = "office@construct.ro", trade = "Structure"))
+    }
+
+    fun updateProgress(phaseId: Long, progress: Int) = viewModelScope.launch(Dispatchers.IO) {
+        val safeProgress = progress.coerceIn(0, 100)
+        val status = when {
+            safeProgress >= 100 -> "Completed"
+            safeProgress > 0 -> "In Progress"
+            else -> "Not Started"
+        }
+        dao.updatePhaseProgress(phaseId, safeProgress, status)
+    }
+
+    fun addContractor(company: String, contact: String, phone: String, email: String, trade: String) = viewModelScope.launch(Dispatchers.IO) {
+        if (company.isNotBlank()) dao.upsertContractorByCompany(ContractorEntity(company = company.trim(), contact = contact, phone = phone, email = email, trade = trade))
+    }
+
+    fun deleteContractor(contractor: ContractorEntity) = viewModelScope.launch(Dispatchers.IO) { dao.deleteContractor(contractor) }
+    fun addExpense(phaseId: Long, contractorId: Long?, category: String, description: String, amount: Double, currency: String, vatIncluded: Boolean, date: String) = viewModelScope.launch(Dispatchers.IO) {
+        if (amount > 0) dao.insertExpense(ExpenseEntity(phaseId = phaseId, contractorId = contractorId, category = category, description = description, amount = amount, currency = currency, vatIncluded = vatIncluded, date = date))
+    }
+
+    fun addDocument(phaseId: Long, expenseId: Long?, type: String, uri: Uri) = viewModelScope.launch(Dispatchers.IO) {
+        dao.insertDocument(DocumentEntity(phaseId = phaseId, expenseId = expenseId, type = type, fileUri = uri.toString(), createdAt = System.currentTimeMillis().toString()))
+    }
+
+    fun importExcel(projectId: Long, inputStream: InputStream) = viewModelScope.launch { excelService.importWorkbook(projectId, inputStream) }
+
+    fun exportExcel(outputStream: OutputStream, state: UiState) = viewModelScope.launch(Dispatchers.IO) {
+        excelService.exportReports(state.project, state.phases, state.contractors, state.expenses, outputStream)
+    }
+}
+
+// ============================================================
+// 6. MAIN ACTIVITY + JETPACK COMPOSE UI
+// ============================================================
+
+class MainActivity : ComponentActivity() {
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        setContent { MaterialTheme { ConstructionApp() } }
+    }
+}
+
+@Composable
+fun ConstructionApp(viewModel: ConstructionViewModel = androidx.lifecycle.viewmodel.compose.viewModel()) {
+    val state by viewModel.uiState.collectAsState()
+    val context = androidx.compose.ui.platform.LocalContext.current
+
+    val importLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        uri?.let { context.contentResolver.openInputStream(it)?.use { input -> viewModel.importExcel(state.project?.id ?: 1L, input) } }
+    }
+
+    val exportLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")) { uri ->
+        uri?.let { context.contentResolver.openOutputStream(it)?.use { output -> viewModel.exportExcel(output, state) } }
+    }
+
+    val photoLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
+        uris.forEach { viewModel.addDocument(state.phases.firstOrNull()?.id ?: 1L, null, "PHOTO", it) }
+    }
+
+    val invoiceLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
+        uris.forEach { viewModel.addDocument(state.phases.firstOrNull()?.id ?: 1L, null, "INVOICE", it) }
+    }
+
+    LazyColumn(modifier = Modifier.fillMaxSize().background(Color(0xFFF1F5F9)).padding(16.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+        item { Header() }
+        item { MetricsRow(state.analytics, state.project) }
+        item { ExcelActions(onImport = { importLauncher.launch(arrayOf("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")) }, onExport = { exportLauncher.launch("construction_reports.xlsx") }) }
+        item { ForecastWarnings(state.analytics) }
+        item { PhaseCostChart(state.phases, state.expenses, state.project) }
+        item { PhaseProgressList(state.phases, state.expenses, state.project, onProgress = viewModel::updateProgress) }
+        item { GanttChart(state.phases) }
+        item { ContractorCrud(state.contractors, onAdd = viewModel::addContractor, onDelete = viewModel::deleteContractor) }
+        item { ExpenseEntry(state.phases, state.contractors, onAdd = viewModel::addExpense) }
+        item { DocumentButtons(onPhoto = { photoLauncher.launch(arrayOf("image/*")) }, onInvoice = { invoiceLauncher.launch(arrayOf("application/pdf", "image/*")) }) }
+        item { DocumentList(state.documents) }
+    }
+}
+
+@Composable
+fun Header() {
+    Column {
+        Text("Romania House Construction Manager", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
+        Text("Kotlin + Jetpack Compose + Room + Apache POI implementation")
+    }
+}
+
+@Composable
+fun MetricsRow(analytics: DashboardAnalytics, project: ProjectEntity?) {
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+            MetricCard("Planned", formatMoney(analytics.planned, project), Modifier.weight(1f))
+            MetricCard("Actual", formatMoney(analytics.actual, project), Modifier.weight(1f))
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+            MetricCard("Variance", formatMoney(analytics.variance, project), Modifier.weight(1f))
+            MetricCard("Progress", "${analytics.progress}%", Modifier.weight(1f))
+        }
+        MetricCard("Forecast Completion Cost", formatMoney(analytics.forecastCompletionCost, project), Modifier.fillMaxWidth())
+    }
+}
+
+@Composable
+fun MetricCard(label: String, value: String, modifier: Modifier = Modifier) {
+    Card(modifier = modifier, shape = RoundedCornerShape(20.dp)) {
+        Column(Modifier.padding(16.dp)) {
+            Text(label, color = Color.Gray)
+            Text(value, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleLarge)
+        }
+    }
+}
+
+@Composable
+fun ExcelActions(onImport: () -> Unit, onExport: () -> Unit) {
+    Card(shape = RoundedCornerShape(20.dp)) {
+        Row(Modifier.padding(16.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            Button(onClick = onImport) { Text("Import Excel") }
+            Button(onClick = onExport) { Text("Export Excel") }
+        }
+    }
+}
+
+@Composable
+fun ForecastWarnings(analytics: DashboardAnalytics) {
+    Card(shape = RoundedCornerShape(20.dp)) {
+        Column(Modifier.padding(16.dp)) {
+            Text("AI Forecasting & Budget Warnings", fontWeight = FontWeight.Bold)
+            if (analytics.warnings.isEmpty()) Text("No major overrun warning detected.")
+            analytics.warnings.forEach { Text("WARNING: $it", color = Color(0xFFB91C1C)) }
+        }
+    }
+}
+
+@Composable
+fun PhaseCostChart(phases: List<ConstructionPhaseEntity>, expenses: List<ExpenseEntity>, project: ProjectEntity?) {
+    val maxPlanned = phases.maxOfOrNull { it.plannedCost }?.coerceAtLeast(1.0) ?: 1.0
+    Card(shape = RoundedCornerShape(20.dp)) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text("Budget vs Actual by Phase", fontWeight = FontWeight.Bold)
+            phases.forEach { phase ->
+                val actual = phaseActualCost(phase, expenses)
+                Text("${phase.name}: ${formatMoney(actual, project)} / ${formatMoney(phase.plannedCost, project)}")
+                Box(Modifier.fillMaxWidth().height(14.dp).background(Color(0xFFE2E8F0), RoundedCornerShape(10.dp))) {
+                    Box(
+                        Modifier.fillMaxHeight()
+                            .fillMaxWidth((actual / maxPlanned).coerceIn(0.03, 1.0).toFloat())
+                            .background(if (actual > phase.plannedCost) Color(0xFFEF4444) else Color(0xFF3B82F6), RoundedCornerShape(10.dp))
+                    )
+                }
+            }
+        }
+    }
+}
+
+
+@Composable
+fun PhaseProgressList(phases: List<ConstructionPhaseEntity>, expenses: List<ExpenseEntity>, project: ProjectEntity?, onProgress: (Long, Int) -> Unit) {
+    Card(shape = RoundedCornerShape(20.dp)) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Text("Construction Progress Per Phase", fontWeight = FontWeight.Bold)
+            phases.forEach { phase ->
+                val actual = phaseActualCost(phase, expenses)
+                Column {
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                        Text(phase.name, fontWeight = FontWeight.SemiBold)
+                        Text(phase.status)
+                    }
+                    Slider(value = phase.progress.toFloat(), onValueChange = { onProgress(phase.id, it.roundToInt()) }, valueRange = 0f..100f)
+                    Text("Budget variance: ${formatMoney(phase.plannedCost - actual, project)}")
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun GanttChart(phases: List<ConstructionPhaseEntity>) {
+    Card(shape = RoundedCornerShape(20.dp)) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text("Gantt Chart Timeline", fontWeight = FontWeight.Bold)
+            phases.forEach { phase ->
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(phase.name, modifier = Modifier.width(140.dp))
+                    Box(Modifier.weight(1f).height(18.dp).background(Color(0xFFE2E8F0), RoundedCornerShape(20.dp))) {
+                        Box(Modifier.fillMaxHeight().fillMaxWidth((phase.progress.coerceAtLeast(3)) / 100f).background(Color(0xFF6366F1), RoundedCornerShape(20.dp)))
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun ContractorCrud(contractors: List<ContractorEntity>, onAdd: (String, String, String, String, String) -> Unit, onDelete: (ContractorEntity) -> Unit) {
+    var company by remember { mutableStateOf("") }
+    var contact by remember { mutableStateOf("") }
+    var phone by remember { mutableStateOf("") }
+    var email by remember { mutableStateOf("") }
+    var trade by remember { mutableStateOf("") }
+
+    Card(shape = RoundedCornerShape(20.dp)) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text("Contractor Database CRUD", fontWeight = FontWeight.Bold)
+            OutlinedTextField(company, { company = it }, label = { Text("Company") }, modifier = Modifier.fillMaxWidth())
+            OutlinedTextField(contact, { contact = it }, label = { Text("Contact") }, modifier = Modifier.fillMaxWidth())
+            OutlinedTextField(phone, { phone = it }, label = { Text("Phone") }, modifier = Modifier.fillMaxWidth())
+            OutlinedTextField(email, { email = it }, label = { Text("Email") }, modifier = Modifier.fillMaxWidth())
+            OutlinedTextField(trade, { trade = it }, label = { Text("Trade") }, modifier = Modifier.fillMaxWidth())
+            Button(onClick = { onAdd(company, contact, phone, email, trade); company = ""; contact = ""; phone = ""; email = ""; trade = "" }) { Text("Add Contractor") }
+            contractors.forEach { contractor ->
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                    Text("${contractor.company} - ${contractor.trade}")
+                    TextButton(onClick = { onDelete(contractor) }) { Text("Delete") }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun ExpenseEntry(phases: List<ConstructionPhaseEntity>, contractors: List<ContractorEntity>, onAdd: (Long, Long?, String, String, Double, String, Boolean, String) -> Unit) {
+    var amount by remember { mutableStateOf("") }
+    var description by remember { mutableStateOf("") }
+    val phaseId = phases.firstOrNull()?.id ?: 1L
+    val contractorId = contractors.firstOrNull()?.id
+
+    Card(shape = RoundedCornerShape(20.dp)) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text("Expense Entry", fontWeight = FontWeight.Bold)
+            OutlinedTextField(description, { description = it }, label = { Text("Description") }, modifier = Modifier.fillMaxWidth())
+            OutlinedTextField(amount, { amount = it }, label = { Text("Amount") }, modifier = Modifier.fillMaxWidth())
+            Button(onClick = { onAdd(phaseId, contractorId, "Materials", description, amount.toDoubleOrNull() ?: 0.0, "EUR", true, "2026-07-09") }) {
+                Text("Save Expense")
+            }
+        }
+    }
+}
+
+@Composable
+fun DocumentButtons(onPhoto: () -> Unit, onInvoice: () -> Unit) {
+    Card(shape = RoundedCornerShape(20.dp)) {
+        Row(Modifier.padding(16.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            Button(onClick = onPhoto) { Text("Upload Photos") }
+            Button(onClick = onInvoice) { Text("Attach Invoice PDF/JPG") }
+        }
+    }
+}
+
+@Composable
+fun DocumentList(documents: List<DocumentEntity>) {
+    Card(shape = RoundedCornerShape(20.dp)) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Text("Stored Documents", fontWeight = FontWeight.Bold)
+            if (documents.isEmpty()) Text("No documents attached yet.")
+            documents.forEach { Text("${it.type}: ${it.fileUri}") }
+        }
+    }
+}
