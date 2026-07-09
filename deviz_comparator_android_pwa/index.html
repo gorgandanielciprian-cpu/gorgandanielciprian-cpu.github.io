@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="ro">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#1f4e78" />
+  <title>Deviz Comparator Mobil</title>
+  <link rel="manifest" href="manifest.webmanifest" />
+  <link rel="stylesheet" href="style.css" />
+  <link rel="icon" href="assets/icon-192.png" />
+</head>
+<body>
+  <div class="app">
+    <header class="top">
+      <div class="eyebrow">Deviz casă Gorgan</div>
+      <h1>Comparator preț piață vs estimat</h1>
+      <div class="hero-icon">⌂</div>
+    </header>
+    <main class="content">
+      <button id="install-button" class="install" onclick="installApp()">Instalează aplicația pe Android</button>
+      <section id="kpis" class="kpis"></section>
+      <section id="budget-alerts" class="card"></section>
+      <section id="price-alerts" class="card"></section>
+      <section class="card"><div class="section-title"><h2>Cost pe etape</h2><span>RON</span></div><div id="bars"></div></section>
+      <section class="card tools">
+        <label class="search">🔎 <input id="search" placeholder="Caută material, cod sau etapă..."></label>
+        <div class="grid2"><select id="stage"></select><select id="sort"><option value="impact">Sortare impact</option><option value="depășiri">Sortare depășiri</option><option value="schimbări preț">Sortare schimbări preț</option><option value="alfabetic">Sortare A-Z</option></select></div>
+      </section>
+      <section id="items"></section>
+      <section class="card tools">
+        <div class="section-title"><h2>Adaugă ofertă/material nou</h2></div>
+        <div class="new-grid"><select id="new-stage"></select><input id="new-cod" placeholder="Cod"></div>
+        <input id="new-material" placeholder="Material / lucrare">
+        <div class="new-grid four"><input id="new-qty" type="number" placeholder="Cant."><input id="new-um" placeholder="UM"><input id="new-est" type="number" placeholder="Est."><input id="new-real" type="number" placeholder="Real"></div>
+        <button onclick="addItem()">Salvează poziția</button>
+      </section>
+    </main>
+    <nav class="bottom"><div class="bottom-inner"><button class="outline" onclick="exportCsv()">CSV</button><button class="outline" onclick="resetAll()">Reset</button><button onclick="scrollTo({top:0,behavior:'smooth'})">Dashboard</button></div></nav>
+  </div>
+  <script src="app.js"></script>
+</body>
+</html>
